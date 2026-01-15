@@ -1,3 +1,21 @@
+### `simpledb/lexer.py
+"""
+simpledb/lexer.py
+
+SQL-like tokenizer (lexer) for the SimpleDB mini-RDBMS.
+
+Responsibilities:
+- Convert an input SQL string into a list of tokens with line/column positions
+- Recognize keywords, identifiers, literals, and punctuation used by our SQL subset
+- Provide reliable error messages for unexpected characters and unterminated strings
+
+Notes:
+- This is a deliberately small SQL subset.
+- String literals use single quotes: 'hello'
+- Booleans: true/false (case-insensitive)
+- NULL is tokenized as a keyword; the parser/executor decide where it is valid.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -7,7 +25,7 @@ from .errors import Position, SqlSyntaxError
 
 
 class TokenType(Enum):
-    # Special
+    """Token categories recognized by the lexer."""
     EOF = auto()
 
     # Identifiers + literals
@@ -15,6 +33,7 @@ class TokenType(Enum):
     INT = auto()
     STRING = auto()
     BOOL = auto()
+    NULL = auto()
 
     # Symbols
     LPAREN = auto()   # (
@@ -25,7 +44,7 @@ class TokenType(Enum):
     STAR = auto()     # *
     DOT = auto()      # .
 
-    # Keywords (Phase 1)
+    # Keywords (subset)
     CREATE = auto()
     TABLE = auto()
     INDEX = auto()
@@ -45,7 +64,6 @@ class TokenType(Enum):
     KEY = auto()
     UNIQUE = auto()
     NOT = auto()
-    NULL = auto()
 
 
 KEYWORDS: dict[str, TokenType] = {
@@ -74,6 +92,20 @@ KEYWORDS: dict[str, TokenType] = {
 
 @dataclass(frozen=True)
 class Token:
+    """
+    A lexical token.
+
+    Attributes:
+        typ: TokenType
+        lexeme: The original text fragment (or best-effort representation)
+        value: Parsed value for literals/idents:
+               - IDENT -> str
+               - INT -> int
+               - STRING -> str (without quotes)
+               - BOOL -> bool
+               - NULL -> None
+        pos: Position in input (line/col)
+    """
     typ: TokenType
     lexeme: str
     value: object | None
@@ -81,8 +113,19 @@ class Token:
 
 
 def tokenize(sql: str) -> list[Token]:
-    tokens: list[Token] = []
+    """
+    Tokenize a SQL-like string into a list of Token objects.
 
+    Args:
+        sql: Raw SQL input string.
+
+    Returns:
+        List of Token, always terminated with EOF token.
+
+    Raises:
+        SqlSyntaxError: for unexpected characters or unterminated strings.
+    """
+    tokens: list[Token] = []
     i = 0
     line = 1
     col = 1
@@ -90,7 +133,14 @@ def tokenize(sql: str) -> list[Token]:
     def cur_pos() -> Position:
         return Position(line=line, col=col)
 
+    def peek(offset: int = 0) -> str:
+        j = i + offset
+        if j >= len(sql):
+            return ""
+        return sql[j]
+
     def advance(n: int = 1) -> None:
+        """Advance the cursor by n characters while tracking line/column."""
         nonlocal i, line, col
         for _ in range(n):
             if i >= len(sql):
@@ -103,21 +153,15 @@ def tokenize(sql: str) -> list[Token]:
             else:
                 col += 1
 
-    def peek(offset: int = 0) -> str:
-        j = i + offset
-        if j >= len(sql):
-            return ""
-        return sql[j]
-
     while i < len(sql):
         ch = peek(0)
 
-        # whitespace
+        # Skip whitespace
         if ch.isspace():
             advance(1)
             continue
 
-        # symbols
+        # Single-character symbols
         if ch == "(":
             tokens.append(Token(TokenType.LPAREN, ch, None, cur_pos()))
             advance(1)
@@ -147,25 +191,26 @@ def tokenize(sql: str) -> list[Token]:
             advance(1)
             continue
 
-        # string literal: '...'
+        # String literal: '...'
         if ch == "'":
             start = cur_pos()
             advance(1)  # consume opening quote
-            buf = []
+            buf: list[str] = []
             while True:
                 if i >= len(sql):
                     raise SqlSyntaxError("Unterminated string literal", start)
                 c = peek(0)
                 if c == "'":
-                    advance(1)  # closing quote
+                    advance(1)  # consume closing quote
                     break
+                # Note: escaping not supported in this minimal lexer.
                 buf.append(c)
                 advance(1)
             s = "".join(buf)
             tokens.append(Token(TokenType.STRING, f"'{s}'", s, start))
             continue
 
-        # integer literal
+        # Integer literal
         if ch.isdigit():
             start = cur_pos()
             j = i
@@ -176,12 +221,13 @@ def tokenize(sql: str) -> list[Token]:
             advance(j - i)
             continue
 
-        # identifier / keyword / boolean
+        # Identifier / keyword / boolean / NULL
         if ch.isalpha() or ch == "_":
             start = cur_pos()
             j = i
             while j < len(sql) and (sql[j].isalnum() or sql[j] == "_"):
                 j += 1
+
             lex = sql[i:j]
             upper = lex.upper()
 
@@ -189,6 +235,8 @@ def tokenize(sql: str) -> list[Token]:
                 tokens.append(Token(TokenType.BOOL, lex, True, start))
             elif upper == "FALSE":
                 tokens.append(Token(TokenType.BOOL, lex, False, start))
+            elif upper == "NULL":
+                tokens.append(Token(TokenType.NULL, lex, None, start))
             elif upper in KEYWORDS:
                 tokens.append(Token(KEYWORDS[upper], lex, upper, start))
             else:
@@ -197,7 +245,7 @@ def tokenize(sql: str) -> list[Token]:
             advance(j - i)
             continue
 
-        # unknown
+        # Unknown character
         raise SqlSyntaxError(f"Unexpected character: {ch!r}", cur_pos())
 
     tokens.append(Token(TokenType.EOF, "", None, Position(line=line, col=col)))

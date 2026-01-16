@@ -1,3 +1,23 @@
+"""
+repl.py
+
+Interactive REPL (Read-Eval-Print Loop) for the SimpleDB mini-RDBMS.
+
+Responsibilities:
+- Provide a CLI shell for executing SQL-like statements against a DB directory.
+- Support multiline SQL input until a semicolon ';' is entered outside of quotes.
+- Display SELECT results in a readable table format.
+- Provide small meta-commands for introspection:
+    - .help
+    - .exit / .quit
+    - .tables
+    - .schema <table>
+
+Usage:
+    python repl.py ./my_db_dir
+If no directory is provided, defaults to ./simpledb_data
+"""
+
 from __future__ import annotations
 
 import sys
@@ -5,11 +25,12 @@ from pathlib import Path
 from typing import Iterable
 
 try:
-    import readline  # noqa: F401  # enables history/editing on many systems
+    import readline  # noqa: F401
 except Exception:
+    # readline is optional; if missing, REPL still works.
     readline = None  # type: ignore[assignment]
 
-from simpledb import Database, CommandOk, QueryResult
+from simpledb import CommandOk, Database, QueryResult
 from simpledb.errors import SimpleDBError
 
 
@@ -19,7 +40,16 @@ PROMPT_CONT = "....> "
 
 def is_complete_statement(buf: str) -> bool:
     """
-    Consider input complete if we have a semicolon outside single quotes.
+    Decide whether the current buffer contains at least one complete statement.
+
+    A statement is considered complete when a semicolon ';' appears outside of
+    single-quoted string literals.
+
+    Args:
+        buf: Current accumulated input buffer.
+
+    Returns:
+        True if complete, else False.
     """
     in_str = False
     for ch in buf:
@@ -31,6 +61,16 @@ def is_complete_statement(buf: str) -> bool:
 
 
 def format_table(columns: list[str], rows: list[list[object]]) -> str:
+    """
+    Pretty-print a QueryResult as an aligned ASCII table.
+
+    Args:
+        columns: Column header list.
+        rows: Row values list.
+
+    Returns:
+        A formatted string suitable for printing to console.
+    """
     cols = [str(c) for c in columns]
     str_rows = [[("" if v is None else str(v)) for v in r] for r in rows]
 
@@ -44,7 +84,7 @@ def format_table(columns: list[str], rows: list[list[object]]) -> str:
 
     sep = "-+-".join("-" * w for w in widths)
 
-    out = []
+    out: list[str] = []
     out.append(fmt_row(cols))
     out.append(sep)
     for r in str_rows:
@@ -52,7 +92,13 @@ def format_table(columns: list[str], rows: list[list[object]]) -> str:
     return "\n".join(out)
 
 
-def print_result(res):
+def print_result(res) -> None:
+    """
+    Print a Database execution result.
+
+    Args:
+        res: CommandOk or QueryResult (or unexpected object).
+    """
     if isinstance(res, CommandOk):
         print(res.message)
         if res.rows_affected:
@@ -70,6 +116,12 @@ def print_result(res):
 
 
 def cmd_tables(db: Database) -> None:
+    """
+    Meta-command: list all tables from catalog.
+
+    Args:
+        db: Database instance.
+    """
     names = sorted(db.catalog.tables.keys())
     if not names:
         print("(no tables)")
@@ -79,6 +131,13 @@ def cmd_tables(db: Database) -> None:
 
 
 def cmd_schema(db: Database, table: str) -> None:
+    """
+    Meta-command: print table schema and indexes.
+
+    Args:
+        db: Database instance.
+        table: Table name.
+    """
     t = db.catalog.tables.get(table)
     if not t:
         print(f"Table not found: {table}")
@@ -86,14 +145,16 @@ def cmd_schema(db: Database, table: str) -> None:
 
     print(f"TABLE {t.name}")
     for c in t.columns:
-        parts = [c.name, c.typ.name + (f"({','.join(map(str, c.typ.params))})" if c.typ.params else "")]
+        type_str = c.typ.name + (f"({','.join(map(str, c.typ.params))})" if c.typ.params else "")
+        flags: list[str] = []
         if c.primary_key:
-            parts.append("PRIMARY KEY")
+            flags.append("PRIMARY KEY")
         if c.unique:
-            parts.append("UNIQUE")
+            flags.append("UNIQUE")
         if c.not_null:
-            parts.append("NOT NULL")
-        print("  - " + " ".join(parts))
+            flags.append("NOT NULL")
+        suffix = (" " + " ".join(flags)) if flags else ""
+        print(f"  - {c.name} {type_str}{suffix}")
 
     if t.indexes:
         print("INDEXES")
@@ -102,6 +163,15 @@ def cmd_schema(db: Database, table: str) -> None:
 
 
 def repl(db_dir: Path) -> int:
+    """
+    Run the interactive REPL.
+
+    Args:
+        db_dir: Database directory.
+
+    Returns:
+        Process exit code (0 on normal exit).
+    """
     db = Database.open(db_dir)
     print(f"SimpleDB REPL (db_dir={db_dir})")
     print("Type .help for commands. End SQL with ';'.")
@@ -115,19 +185,21 @@ def repl(db_dir: Path) -> int:
             print()
             return 0
         except KeyboardInterrupt:
+            # Clear current buffer on Ctrl+C
             print()
             buf = ""
             continue
 
         line_stripped = line.strip()
 
-        # meta commands (only when buffer is empty)
+        # Meta commands only apply if we're not in the middle of a multi-line SQL buffer.
         if not buf and line_stripped.startswith("."):
             parts = line_stripped.split()
             cmd = parts[0].lower()
 
             if cmd in (".exit", ".quit"):
                 return 0
+
             if cmd == ".help":
                 print("Meta commands:")
                 print("  .help              show this help")
@@ -140,9 +212,11 @@ def repl(db_dir: Path) -> int:
                 print("  INSERT INTO users (id, email) VALUES (1, 'a@b.com');")
                 print("  SELECT * FROM users;")
                 continue
+
             if cmd == ".tables":
                 cmd_tables(db)
                 continue
+
             if cmd == ".schema":
                 if len(parts) != 2:
                     print("Usage: .schema <table>")
@@ -157,7 +231,7 @@ def repl(db_dir: Path) -> int:
         if not is_complete_statement(buf):
             continue
 
-        # Execute SQL buffer (can include multiple statements)
+        # Execute buffer as a script (supports multiple statements separated by ;)
         try:
             results = db.execute_script(buf)
             for r in results:
@@ -165,13 +239,22 @@ def repl(db_dir: Path) -> int:
         except SimpleDBError as e:
             print(e)
         except Exception as e:
-            # unexpected error
+            # Unexpected internal error; keep REPL alive but show message
             print(f"Internal error: {e}")
 
         buf = ""
 
 
 def main(argv: list[str]) -> int:
+    """
+    CLI entrypoint.
+
+    Args:
+        argv: sys.argv list.
+
+    Returns:
+        Exit code.
+    """
     db_dir = Path(argv[1]) if len(argv) > 1 else Path("./simpledb_data")
     return repl(db_dir)
 

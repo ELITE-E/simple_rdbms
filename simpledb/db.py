@@ -1,133 +1,90 @@
+"""
+simpledb/db.py
+
+Public Database API for the SimpleDB mini-RDBMS.
+
+Responsibilities:
+- Provide a simple library interface:
+    - Database.open(path)
+    - db.execute(sql) -> CommandOk | QueryResult
+    - db.execute_script(sql_script) -> list[CommandOk|QueryResult]
+- Load/persist the schema catalog
+- Maintain an index cache shared across executions (performance + fewer disk reads)
+
+This module is intentionally minimal so it can be used from:
+- the REPL (repl.py)
+- a trivial demo web app (e.g., finance tracker)
+"""
+
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .catalog import Catalog
 from .exec.executor import Executor
-from .parser import parse_sql
+from .index.hash_index import HashIndex
+from .parser import parse_script, parse_sql
 
 
 @dataclass
 class Database:
+    """
+    Database instance bound to a root directory on disk.
+
+    Attributes:
+        root_dir: DB root folder on disk.
+        catalog: Loaded schema catalog.
+        index_cache: Cache of opened HashIndex objects.
+    """
     root_dir: Path
     catalog: Catalog
+    index_cache: dict[str, HashIndex] = field(default_factory=dict)
 
     @classmethod
     def open(cls, path: str | Path) -> "Database":
+        """
+        Open (or create) a database at a directory path.
+
+        Args:
+            path: Directory path (string or Path). If it doesn't exist, it is created.
+
+        Returns:
+            Database instance.
+        """
         root = Path(path)
         root.mkdir(parents=True, exist_ok=True)
         catalog = Catalog.load(root)
         return cls(root_dir=root, catalog=catalog)
 
     def execute(self, sql: str):
+        """
+        Execute a single SQL statement.
+
+        Args:
+            sql: SQL string containing exactly one statement (semicolon optional).
+
+        Returns:
+            CommandOk for non-SELECT statements, or QueryResult for SELECT.
+
+        Raises:
+            SqlSyntaxError: on parse errors.
+            ExecutionError / ConstraintError: on execution failure.
+        """
         stmt = parse_sql(sql)
-        ex = Executor(db_dir=self.root_dir, catalog=self.catalog)
+        ex = Executor(db_dir=self.root_dir, catalog=self.catalog, index_cache=self.index_cache)
         return ex.execute(stmt)
-#step4changes above
 
-# from __future__ import annotations
+    def execute_script(self, sql: str):
+        """
+        Execute a script containing one or more semicolon-separated SQL statements.
 
-# from dataclasses import dataclass
-# from pathlib import Path
+        Args:
+            sql: SQL script string.
 
-# from .catalog import Catalog
-# from .exec.executor import Executor
-# from .parser import parse_sql
-
-
-# @dataclass
-# class Database:
-#     """
-#     SimpleDB entrypoint.
-
-#     Step 3:
-#       - tokenize + parse
-#       - catalog load/save
-#       - executes CREATE TABLE / CREATE INDEX
-#     """
-#     root_dir: Path
-#     catalog: Catalog
-
-#     @classmethod
-#     def open(cls, path: str | Path) -> "Database":
-#         root = Path(path)
-#         root.mkdir(parents=True, exist_ok=True)
-#         catalog = Catalog.load(root)
-#         return cls(root_dir=root, catalog=catalog)
-
-#     def execute(self, sql: str):
-#         stmt = parse_sql(sql)
-#         ex = Executor(db_dir=self.root_dir, catalog=self.catalog)
-#         return ex.execute(stmt)
-
-#------------step3change above
-
-
-# from __future__ import annotations
-
-# from dataclasses import dataclass
-# from pathlib import Path
-
-# from .parser import parse_sql
-# from .result import CommandOk
-
-
-# @dataclass
-# class Database:
-#     """
-#     SimpleDB entrypoint.
-
-#     Step 2:
-#       - tokenize + parse works
-#       - execution engine not implemented yet
-#     """
-#     root_dir: Path
-
-#     @classmethod
-#     def open(cls, path: str | Path) -> "Database":
-#         root = Path(path)
-#         root.mkdir(parents=True, exist_ok=True)
-#         return cls(root_dir=root)
-
-#     def execute(self, sql: str):
-#         stmt = parse_sql(sql)
-#         return CommandOk(message=f"OK (parsed: {type(stmt).__name__})")
-
-
-
-# from __future__ import annotations
-
-# from dataclasses import dataclass
-# from pathlib import Path
-
-# from .errors import ExecutionError
-# from .lexer import tokenize
-# from .result import CommandOk
-
-
-# @dataclass
-# class Database:
-#     """
-#     SimpleDB entrypoint.
-
-#     Current step:
-#       - supports lexing via execute(), but does not parse/execute yet.
-#     """
-#     root_dir: Path
-
-#     @classmethod
-#     def open(cls, path: str | Path) -> "Database":
-#         root = Path(path)
-#         root.mkdir(parents=True, exist_ok=True)
-#         return cls(root_dir=root)
-
-#     def execute(self, sql: str):
-#         """
-#         Later steps: tokenize -> parse -> execute -> return QueryResult / CommandOk.
-
-#         For now (Step 1): only tokenize to validate SQL-like input shape.
-#         """
-#         _ = tokenize(sql)  # raises SqlSyntaxError if invalid tokenization
-#         # Placeholder until parser+executor arrive.
-#         return CommandOk(message="OK (lexed)")
+        Returns:
+            List of results in statement order.
+        """
+        stmts = parse_script(sql)
+        ex = Executor(db_dir=self.root_dir, catalog=self.catalog, index_cache=self.index_cache)
+        return [ex.execute(s) for s in stmts]

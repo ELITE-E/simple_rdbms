@@ -1,0 +1,30 @@
+# pyproject.toml
+# Minimal packaging configuration for the SimpleDB codebase.
+# Enables:
+#   - pip install .
+#   - pip install -e .
+#   - python -m simpledb
+#   - console script: simpledb
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "simpledb"
+version = "0.1.0"
+description = "Educational mini-RDBMS with SQL-like interface and REPL"
+requires-python = ">=3.10"
+dependencies = []
+
+# Optional, but convenient: allows running `simpledb` after install
+[project.scripts]
+simpledb = "simpledb.__main__:main"
+
+[tool.setuptools]
+# Install the `simpledb/` package directory
+packages = ["simpledb"]
+
+# Also install the top-level `repl.py` as an importable module named `repl`
+# (so `simpledb.__main__` can import it).
+py-modules = ["repl"]
